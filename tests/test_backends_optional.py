@@ -39,6 +39,19 @@ def test_optional_scorer_basics(name):
     assert scorer.measure(CANDIDATE_REPEAT) < scorer.measure(CANDIDATE_NOVEL)
 
 
+def test_zstd_thread_safe_scoring():
+    """Concurrent measure() calls must not corrupt the shared CCtx."""
+    if not _available("zstd"):
+        pytest.skip("zstd not installed")
+    from concurrent.futures import ThreadPoolExecutor
+
+    scorer = backends.get("zstd").prepare(CONTEXT)
+    cands = [CANDIDATE_REPEAT, CANDIDATE_NOVEL] * 50
+    with ThreadPoolExecutor(8) as pool:
+        got = list(pool.map(scorer.measure, cands))
+    assert got == [scorer.measure(c) for c in cands]
+
+
 @pytest.mark.parametrize("name", OPTIONAL_NAMES)
 def test_optional_empty_context(name):
     if not _available(name):

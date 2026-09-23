@@ -9,6 +9,7 @@ under it. Candidates compress alone, so each call is O(candidate).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import ClassVar
 
@@ -28,8 +29,20 @@ class ZstdBackend(OptionalBackend):
         dict_data = None
         if context:
             dict_data = zstd.ZstdCompressionDict(context, dict_type=zstd.DICT_TYPE_RAWCONTENT)
-        compressor = zstd.ZstdCompressor(level=level, dict_data=dict_data)
-        return DictScorer(compressor.compress, context)
+        # ZstdCompressor.compress() is not reentrant across threads — the
+        # shared CCtx errors (or crashes) under concurrent calls. Keep one
+        # compressor per thread instead.
+        local = threading.local()
+
+        def compress_with_dict(candidate: bytes) -> bytes:
+            compressor = getattr(local, "compressor", None)
+            if compressor is None:
+                compressor = local.compressor = zstd.ZstdCompressor(
+                    level=level, dict_data=dict_data
+                )
+            return compressor.compress(candidate)
+
+        return DictScorer(compress_with_dict, context)
 
 
 def register_into(register: Callable[[str, Callable[[], Backend]], None]) -> None:
