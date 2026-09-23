@@ -29,6 +29,14 @@ def _register_builtins() -> None:
     bzip2_backend.register_into(register)
     lzma_backend.register_into(register)
 
+    from . import brotli_backend, lz4_backend, lzo_backend, snappy_backend, zstd_backend
+
+    zstd_backend.register_into(register)
+    brotli_backend.register_into(register)
+    lz4_backend.register_into(register)
+    snappy_backend.register_into(register)
+    lzo_backend.register_into(register)
+
 
 @dataclass(frozen=True)
 class BackendInfo:

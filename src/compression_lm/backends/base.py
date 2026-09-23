@@ -73,6 +73,24 @@ class OneShotScorer(Scorer):
         return len(self._compress(self.context + candidate)) - self._base_len
 
 
+class DictScorer(Scorer):
+    """Scorer for compressors that accept the context as a dictionary.
+
+    Several libraries (zstd, brotli, lz4) can compress a small payload
+    against a caller-supplied dictionary whose contents are usable as match
+    history. ``measure`` then reports ``len(compress(c, dict=ctx))`` minus
+    the cost of an empty payload — the framing overhead all candidates share.
+    """
+
+    def __init__(self, compress_with_dict: Callable[[bytes], bytes], context: bytes) -> None:
+        self._compress = compress_with_dict
+        self.context = context
+        self._base_len = len(compress_with_dict(b""))
+
+    def measure(self, candidate: bytes) -> int:
+        return len(self._compress(candidate)) - self._base_len
+
+
 class Backend(ABC):
     """A named compression algorithm that can score continuations."""
 
