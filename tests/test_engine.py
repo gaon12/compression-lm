@@ -60,7 +60,7 @@ def test_generate_respects_length_and_alphabet():
 def test_generate_reproduces_periodic_corpus():
     """On a periodic corpus, greedy decoding should track the period."""
     backend = backends.get("deflate")
-    cfg = GenerationConfig(length=32, lookahead=16, beam_width=16, temperature=0.0)
+    cfg = GenerationConfig(length=32, lookahead=16, beam_width=16, temperature=0.0, seed=0)
     res = generate(backend, CORPUS, b"the quick brown fox jumps over the lazy dog", cfg)
     # Most generated 8-grams should exist verbatim in the corpus.
     hits = sum(1 for i in range(len(res.text) - 7) if res.text[i : i + 8] in CORPUS)
