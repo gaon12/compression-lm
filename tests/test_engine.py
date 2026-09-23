@@ -101,6 +101,17 @@ def test_generate_context_cap_respected():
     assert len(res.text) == 16
 
 
+def test_corpus_gate_strict_recombination_and_speedup():
+    """Gated mode scores far fewer candidates and copies corpus verbatim."""
+    backend = backends.get("deflate")
+    base = dict(length=48, lookahead=16, beam_width=16, temperature=0.0, seed=0)
+    gated = generate(backend, CORPUS, b"the quick ", GenerationConfig(corpus_gate=True, **base))
+    free = generate(backend, CORPUS, b"the quick ", GenerationConfig(corpus_gate=False, **base))
+    assert gated.evaluations < free.evaluations
+    # every 8-gram of gated output must be a corpus substring
+    assert all(gated.text[i : i + 8] in CORPUS for i in range(len(gated.text) - 7))
+
+
 def test_repeat_penalty_changes_ranking():
     """A banned n-gram must push otherwise-best candidates down the ranking."""
     backend = backends.get("deflate")

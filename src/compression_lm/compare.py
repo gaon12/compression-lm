@@ -62,6 +62,7 @@ def run_comparison(
     context_bytes: int | None = None,
     memory: int = 128,
     tiebreak: str = "corpus",
+    corpus_gate: bool = False,
     repeat_penalty: float = 0.0,
     backend_options: dict | None = None,
 ) -> list[ComparisonRow]:
@@ -89,6 +90,7 @@ def run_comparison(
             context_bytes=context_bytes or 0,
             memory=memory,
             tiebreak=tiebreak,
+            corpus_gate=corpus_gate,
             repeat_penalty=repeat_penalty,
             workers=workers,
             seed=seed,

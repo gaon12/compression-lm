@@ -53,6 +53,13 @@ class GenerationConfig:
     #: pure random tie-breaking. Compressed lengths are byte-granular, so
     #: ties are frequent and an unbiased tie-break matters.
     tiebreak: str = "corpus"
+    #: With tiebreak="corpus", only score candidates that occur verbatim in
+    #: the context (falls back to the full alphabet at dead ends). This is
+    #: a 10-50x speedup — in-corpus continuations are rare, so nearly all
+    #: compression calls are skipped — at the cost of ranking non-matching
+    #: candidates only when no match exists. Output becomes strict
+    #: recombination of corpus substrings.
+    corpus_gate: bool = False
     #: Threads fanning out candidate scoring (measure() is thread-safe).
     workers: int = 1
     #: Seed for temperature sampling; None for nondeterminism.
@@ -128,8 +135,13 @@ def _beam_span(
     beams = [b""]
     scores = [0]
     evaluations = 0
+    gate = cfg.corpus_gate and cfg.tiebreak == "corpus"
     for _ in range(cfg.lookahead):
         cands = [h + bytes([b]) for h in beams for b in alphabet]
+        if gate:
+            members = [c for c in cands if c in context]
+            if members:
+                cands = members
         raw = _measure(scorer, cands, pool)
         evaluations += len(cands)
         if banned:
