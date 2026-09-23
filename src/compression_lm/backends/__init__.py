@@ -23,9 +23,11 @@ def register(name: str, factory: Callable[[], Backend]) -> None:
 
 
 def _register_builtins() -> None:
-    from . import zlib_backend
+    from . import bzip2_backend, lzma_backend, zlib_backend
 
     zlib_backend.register_into(register)
+    bzip2_backend.register_into(register)
+    lzma_backend.register_into(register)
 
 
 @dataclass(frozen=True)
