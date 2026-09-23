@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "compression-lm"
+version = "0.1.0"
+description = "Text generation and comparative analysis using general-purpose compressors as language models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "gaon12" }]
+keywords = ["compression", "language-model", "gzip", "zstd", "brotli"]
+dependencies = []
+
+[project.optional-dependencies]
+zstd = ["zstandard>=0.23"]
+brotli = ["brotli>=1.1"]
+lz4 = ["lz4>=4.3"]
+snappy = ["python-snappy>=0.7"]
+lzo = ["python-lzo>=1.14"]
+all = [
+    "zstandard>=0.23",
+    "brotli>=1.1",
+    "lz4>=4.3",
+    "python-snappy>=0.7",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+clm = "compression_lm.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/compression_lm"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "W", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
