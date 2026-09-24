@@ -1,3 +1,0 @@
-backend,context_bytes,prepare_seconds,contexts_per_sec,eval_seconds_mean,evals_per_sec,rss_before_bytes,rss_after_bytes,peak_rss_bytes,source,positions_per_sec
-deflate,32768,0.0014464000007137657,691.3716810747529,8.93546630891251e-05,11191.357735886366,30691328,31432704,31514624,microbench,
-deflate,4096,0.01695359975565225,,,31879.876599153555,,,,teacher_forced,119.48550495168367
