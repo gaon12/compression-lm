@@ -32,7 +32,12 @@ TIME_BUDGETS: tuple[float, ...] = (10.0, 30.0)
 
 
 def _disc_proxy(
-    backend: Backend, corpus: bytes, prompt: bytes, span: bytes, seed: int
+    backend: Backend,
+    corpus: bytes,
+    prompt: bytes,
+    span: bytes,
+    seed: int,
+    backend_options: dict | None = None,
 ) -> tuple[float, int]:
     """Fraction of hard negatives the generated span outscores.
 
@@ -44,7 +49,10 @@ def _disc_proxy(
     if n < 2:
         return 0.0, 0
     context = corpus + prompt
-    scorer = backend.prepare(context[-min(len(context), backend.context_limit) :])
+    scorer = backend.prepare(
+        context[-min(len(context), backend.context_limit) :],
+        **dict(backend_options or {}),
+    )
     # hard negatives share the GENERATED span's own first 1-2 bytes —
     # near-misses the span must beat to count as fluent (spec §15).
     rng = random.Random(f"{seed}:{n}:{len(span)}")
@@ -69,6 +77,8 @@ def tune_search_params(
     grid: Sequence[tuple[int, int]],
     seed: int = 42,
     target_len: int = 48,
+    workers: int = 1,
+    backend_options: dict | None = None,
 ) -> tuple[tuple[int, int], list[dict]]:
     """Pick (beam, horizon) on validation — never on test results.
 
@@ -85,7 +95,10 @@ def tune_search_params(
             lookahead=horizon,
             temperature=0.0,
             time_budget_sec=tune_budget_sec,
+            context_bytes=4096,  # parity with the benchmarked conditions
             seed=seed,
+            workers=workers,
+            backend_options=dict(backend_options or {}),
         )
         wins: list[float] = []
         reps: list[float] = []
@@ -93,7 +106,9 @@ def tune_search_params(
         for prompt in val_prompts:
             res = generate(backend, corpus, prompt, cfg)
             if len(res.text) >= 16:
-                w, _ = _disc_proxy(backend, corpus, prompt, res.text, seed)
+                w, _ = _disc_proxy(
+                    backend, corpus, prompt, res.text, seed, backend_options
+                )
                 wins.append(w)
                 reps.append(repetition_metrics(res.text)["rep_4gram"])
         row = {
@@ -144,6 +159,7 @@ def run_equal_time(
             lookahead=horizon,
             temperature=0.8,
             time_budget_sec=budget_sec,
+            context_bytes=4096,  # same effective context for all backends
             workers=workers,
             seed=seed,
             backend_options=dict(backend_options or {}),

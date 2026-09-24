@@ -22,11 +22,18 @@ from compression_lm.bench_v3 import runner3
 
 
 def main() -> None:
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--dataset",
         default="tiny_shakespeare",
-        help="tiny_shakespeare | wikitext2 | path to a raw text file",
+        help="tiny_shakespeare | wikitext2 | all | path to a raw text file",
+    )
+    p.add_argument(
+        "--backends",
+        default="",
+        help="comma list to restrict backends (default: all available)",
     )
     p.add_argument("--out", default="results_v3", help="output directory")
     p.add_argument("--seed", type=int, default=42)
@@ -42,7 +49,7 @@ def main() -> None:
     p.add_argument(
         "--phases",
         default="all",
-        help="comma list of: scoreval,teacher,disc,evalgen,eetime,snappy,rawpair",
+        help="comma list of: zstdval,scorerval,teacher,disc,rawpair,evalgen,eetime,snappy,speed",
     )
     p.add_argument("--resume", action="store_true", help="continue from checkpoint")
     p.add_argument("--assemble-only", action="store_true")
@@ -67,6 +74,7 @@ def main() -> None:
             if a.phases == "all"
             else [s.strip() for s in a.phases.split(",") if s.strip()]
         ),
+        backend_names=tuple(s.strip() for s in a.backends.split(",") if s.strip()),
         resume=a.resume,
         assemble_only=a.assemble_only,
         zip_after=a.zip,

@@ -613,6 +613,8 @@ def _eetime_task(
             tune_budget_sec=tune_budget,
             grid=grid,
             seed=cfg.seed,
+            workers=cfg.workers,
+            backend_options=v3opts.prepare_options(name),
         )
         rows = equaltime.run_equal_time(
             backend,
@@ -871,7 +873,13 @@ def run(cfg: Bench3Config) -> Path:
             if "speed" in phases:
                 _speed_task(cfg, ds, name, backend, manifest)
             if "teacher" in phases:
-                for ctx in cfg.teacher_ctxs:
+                # dedup by effective context: provided > backend window feeds
+                # the scorer the identical bytes — run the smallest provided
+                # ctx per distinct effective value instead of recomputing.
+                by_eff: dict[int, int] = {}
+                for ctx in sorted(cfg.teacher_ctxs):
+                    by_eff.setdefault(_eff_ctx(backend, ctx), ctx)
+                for ctx in sorted(by_eff.values()):
                     _teacher_task(cfg, ds, name, backend, ctx, positions, manifest)
             if "disc" in phases:
                 lens = SNAPPY_LENGTHS if name == "snappy" else cfg.disc_lengths
@@ -988,6 +996,18 @@ def assemble(cfg: Bench3Config) -> None:
     for r in tf + zval:
         if r.get("status") == "ok":
             r.update(_teacher_cis(cfg, r))
+            # spec §22 column names alongside the internal metric names
+            r.setdefault("unique_scores_mean", r.get("mean_unique_scores"))
+            r.setdefault("largest_tie_mean", r.get("mean_max_tie"))
+            r.setdefault("contexts_per_sec", r.get("positions_per_sec"))
+            r.setdefault("pseudo_bpb", r.get("teacher_forced_pseudo_bpb"))
+            r.setdefault("pseudo_perplexity", r.get("pseudo_ppl"))
+            if r.get("mean_unique_scores"):
+                r.setdefault(
+                    "avg_tie_group_size",
+                    r.get("evals", 0) / max(1, r.get("n_positions", 1))
+                    / r["mean_unique_scores"],
+                )
             at = _discpos_all_tied(cfg, r)
             if at is not None:
                 r["all_tied_fraction"] = at
