@@ -62,6 +62,10 @@ class GenerationConfig:
     corpus_gate: bool = False
     #: Threads fanning out candidate scoring (measure() is thread-safe).
     workers: int = 1
+    #: Wall-clock cap in seconds; None means "finish cfg.length". When set,
+    # generation stops after the current span once the budget is spent and
+    # the partial output is returned (result.elapsed ~<= budget).
+    time_budget_sec: float | None = None
     #: Seed for temperature sampling; None for nondeterminism.
     seed: int | None = None
     #: Passed verbatim to Backend.prepare() (e.g. level, preset, quality).
@@ -201,6 +205,10 @@ def generate(
     started = time.perf_counter()
     try:
         while len(out) < cfg.length:
+            if cfg.time_budget_sec is not None and (
+                time.perf_counter() - started > cfg.time_budget_sec
+            ):
+                break
             recent = bytes(prompt) + bytes(out)
             context = corpus_tail + recent[-cfg.memory :] if cfg.memory else corpus_tail
             scorer = backend.prepare(context, **dict(cfg.backend_options))
