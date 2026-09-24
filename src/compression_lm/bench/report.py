@@ -67,44 +67,45 @@ def _tf_table(rows: list[dict], ctx: int | None = None) -> str:
     )
 
 
-def _gen_table(rows: list[dict]) -> str:
+def _gen_table(rows: list[dict], budget_col: bool = False) -> str:
     means = [r for r in rows if r.get("prompt") == "__mean__"]
     if not means:
         return "_no rows_"
-    means.sort(key=lambda r: _f(r.get("generated_compression_bpb")))
-    return md_table(
-        [
-            "backend",
-            "ctx_eff",
-            "gen_BPB",
-            "copy_run",
-            "copy_span_max",
-            "ovl_8",
-            "ovl_32",
-            "self_rep8",
-            "distinct4",
-            "utf8",
-            "evals/s",
-            "B/s",
-        ],
-        [
-            [
-                r["backend"],
-                r.get("context_effective", "?"),
-                fmt(_f(r.get("generated_compression_bpb"))),
-                fmt(_f(r.get("copy_run")), ".0f"),
-                fmt(_f(r.get("copy_span_max")), ".0f"),
-                fmt(_f(r.get("overlap_8gram"))),
-                fmt(_f(r.get("overlap_32gram"))),
-                fmt(_f(r.get("self_rep_8"))),
-                fmt(_f(r.get("distinct_4"))),
-                r.get("utf8_valid", "?"),
-                fmt(_f(r.get("evals_per_sec")), ".0f"),
-                fmt(_f(r.get("bytes_per_sec")), ".1f"),
-            ]
-            for r in means
-        ],
-    )
+    means.sort(key=lambda r: (_f(r.get("budget_per_byte")), _f(r.get("generated_compression_bpb"))))
+    header = ["backend", "ctx_eff"]
+    if budget_col:
+        header.append("budget/B")
+    header += [
+        "gen_BPB",
+        "copy_run",
+        "copy_span_max",
+        "ovl_8",
+        "ovl_32",
+        "self_rep8",
+        "distinct4",
+        "utf8",
+        "evals/s",
+        "B/s",
+    ]
+    rows_out = []
+    for r in means:
+        line = [r["backend"], r.get("context_effective", "?")]
+        if budget_col:
+            line.append(r.get("budget_per_byte", "?"))
+        line += [
+            fmt(_f(r.get("generated_compression_bpb"))),
+            fmt(_f(r.get("copy_run")), ".0f"),
+            fmt(_f(r.get("copy_span_max")), ".0f"),
+            fmt(_f(r.get("overlap_8gram"))),
+            fmt(_f(r.get("overlap_32gram"))),
+            fmt(_f(r.get("self_rep_8"))),
+            fmt(_f(r.get("distinct_4"))),
+            r.get("utf8_valid", "?"),
+            fmt(_f(r.get("evals_per_sec")), ".0f"),
+            fmt(_f(r.get("bytes_per_sec")), ".1f"),
+        ]
+        rows_out.append(line)
+    return md_table(header, rows_out)
 
 
 def _quant_table(tf_rows: list[dict], ctx: int = 32768) -> str:
@@ -263,6 +264,7 @@ def build_report(results_dir: Path) -> Path:
     gen_c = _read_csv(results_dir / "generation_equal_compute.csv")
     speed = _read_csv(results_dir / "speed.csv")
     overhead = _read_csv(results_dir / "overhead.csv")
+    scorecmp = _read_csv(results_dir / "scoring_methods.csv")
     status = _read_csv(results_dir / "backend_status.csv")
     cfg = {}
     cj = results_dir / "config.json"
@@ -312,10 +314,10 @@ def build_report(results_dir: Path) -> Path:
         "len=256B, seed=42, identical prompts:\n",
         _gen_table(gen_s),
         "\n## Equal-compute generation\n",
-        "Fixed candidate-eval budget per output byte (2000 fast+slow / "
-        "2000+10000 fast); beam = budget // alphabet; lookahead tuned on "
-        "VALIDATION only:\n",
-        _gen_table(gen_c),
+        "Fixed candidate-eval budget per output byte (fast backends ran "
+        "budget 2000 and 10000; slow/very-slow ran 2000); "
+        "beam = budget // alphabet; lookahead tuned on VALIDATION only:\n",
+        _gen_table(gen_c, budget_col=True),
         "\n## Retrieval / copy analysis\n",
         _correlations(gen_s, tf),
         "\n(Per-output detail in `copy_metrics.csv`.)\n",
@@ -325,6 +327,11 @@ def build_report(results_dir: Path) -> Path:
         _speed_table(speed),
         "\n## Compression container overhead\n",
         _overhead_table(overhead),
+        "\n## Scoring-method comparison (A vs B)\n",
+        "Method A = plain `len(compress(ctx + b)) - len(compress(ctx))` "
+        "recompression; Method B = each backend's actual scorer "
+        "(incremental state / dictionary / full recompress):\n",
+        _scorecmp_table(scorecmp),
         "\n## Generation samples (most copy-heavy)\n",
         _samples_section(results_dir / "generations", gen_s),
         "\n## Caveats\n",
@@ -402,6 +409,32 @@ def _overhead_table(rows: list[dict]) -> str:
                 r.get("delta_novel_8B", "?"),
                 r.get("delta_novel_32B", "?"),
                 r.get("delta_novel_64B", "?"),
+            ]
+            for r in rows
+        ],
+    )
+
+
+def _scorecmp_table(rows: list[dict]) -> str:
+    if not rows:
+        return "_no rows_"
+
+    def cell(v) -> str:
+        f = _f(v, default=float("nan"))
+        return "-" if f != f else fmt(f)  # nan / empty -> "-"
+
+    rows = sorted(rows, key=lambda r: r.get("backend", ""))
+    return md_table(
+        ["backend", "method_B", "A_mean", "B_mean", "B-A", "pearson", "identical"],
+        [
+            [
+                r.get("backend", "?"),
+                r.get("scoring_method") or (r.get("note", "")[:40] or "?"),
+                cell(r.get("methodA_mean")),
+                cell(r.get("methodB_mean")),
+                cell(r.get("B_minus_A_mean")),
+                cell(r.get("pearson_A_B")),
+                cell(r.get("identical_frac")),
             ]
             for r in rows
         ],

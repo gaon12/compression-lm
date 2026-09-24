@@ -12,3 +12,4 @@ venv/
 reports/
 outputs/
 results*/
+results*.zip
