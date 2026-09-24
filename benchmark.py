@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="rebuild CSVs/plots/report from existing raw rows",
     )
+    p.add_argument(
+        "--zip",
+        action="store_true",
+        help="package results/ into results.zip after the run",
+    )
     args = p.parse_args(argv)
 
     names = tuple(s.strip() for s in args.backends.split(",")) if args.backends else None
@@ -93,8 +98,24 @@ def main(argv: list[str] | None = None) -> int:
         assemble(cfg, load_tiny_shakespeare(cfg.dataset, seed=cfg.seed))
     else:
         run(cfg)
+    if args.zip:
+        _make_zip(cfg.out_dir)
     print(f"results written under {cfg.out_dir}")
     return 0
+
+
+def _make_zip(results_dir: Path) -> Path:
+    """Package every result artifact into results.zip (raw/ included —
+    it is the checkpoint + per-position evidence)."""
+    import zipfile
+
+    out = results_dir.parent / "results.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for f in sorted(results_dir.rglob("*")):
+            if f.is_file():
+                z.write(f, f.relative_to(results_dir.parent))
+    print(f"zip -> {out}")
+    return out
 
 
 if __name__ == "__main__":
