@@ -24,8 +24,14 @@ from ..engine import GenerationConfig, corpus_alphabet
 from . import genbench, instrument, reporting, teacher
 from .datasets import Dataset, load_tiny_shakespeare, sample_positions
 
-#: Backends whose scorer is O(context) per candidate — reduced workloads.
-SLOW_BACKENDS = frozenset({"bzip2", "lzma", "lzma2", "xz", "zstd_dict", "lzo"})
+#: Workload tiers by per-eval cost (measured, not guessed):
+#: fast   — clone/dict scorers <0.1 ms/eval: full positions + all prompts
+#: slow   — one-shot ~0.2-0.7 ms/eval: 1/5 positions, fewer prompts
+#: vslow  — one-shot ~1-4 ms/eval: 1/10 positions, minimal prompts,
+#:          64-byte outputs for equal-compute. Reductions are recorded in
+#:          every row (n_positions / n_prompts), never silent.
+SLOW_BACKENDS = frozenset({"bzip2", "zstd_dict", "lzo"})
+VERY_SLOW_BACKENDS = frozenset({"lzma", "lzma2", "xz"})
 
 #: Effective-context caps for the context sweep: (cap_bytes, reason).
 #: "window" = algorithmic limit; "compute" = benchmark-imposed cap.
@@ -80,13 +86,37 @@ def _n_positions(cfg: BenchConfig, backend: str) -> int:
         base = 10000
     else:
         base = 1000
+    if backend in VERY_SLOW_BACKENDS:
+        return max(1, base // 10)  # 100 quick / 1000 full
     if backend in SLOW_BACKENDS:
         return max(1, base // 5)  # 200 quick / 2000 full
     return base
 
 
 def _n_prompts(cfg: BenchConfig, backend: str) -> int:
-    return min(cfg.n_prompts, 4 if backend in SLOW_BACKENDS else cfg.n_prompts)
+    if backend in VERY_SLOW_BACKENDS:
+        return min(cfg.n_prompts, 1 if cfg.mode == "quick" else 2)
+    if backend in SLOW_BACKENDS:
+        return min(cfg.n_prompts, 4 if cfg.mode == "quick" else 6)
+    return cfg.n_prompts
+
+
+def _n_compute_prompts(cfg: BenchConfig, backend: str) -> int:
+    """Equal-compute prompt counts: fewer than equal-search since each
+    prompt at budget 2000 is already ~0.5M candidate evaluations."""
+    if backend in VERY_SLOW_BACKENDS:
+        return 1
+    if backend in SLOW_BACKENDS:
+        return min(cfg.n_prompts, 2)
+    return cfg.n_prompts
+
+
+def _compute_out_len(cfg: BenchConfig, backend: str) -> int:
+    """Equal-compute keeps the same *per-byte* eval budget; the slowest
+    tier emits 64 bytes so actual total evals stay feasible (recorded)."""
+    if backend in VERY_SLOW_BACKENDS:
+        return min(64, cfg.gen_length)
+    return cfg.gen_length
 
 
 def _eff_ctx(name: str, provided: int) -> tuple[int, str]:
@@ -182,6 +212,10 @@ def _teacher_task(
             manifest.mark(key)
             return
     backend = backends.get(name)
+    # instance-level sweep cap: zstd's dict mode can digest megabytes while
+    # one-shot backends are compute-capped; generation keeps the class
+    # default for 32 KiB parity with deflate.
+    backend.context_limit = _eff_ctx(name, provided_ctx)[0]
     n = _n_positions(cfg, name)
     pos = positions[:n]
     backend_options = cfg.backend_options.get(name, {})
@@ -290,7 +324,7 @@ def _gen_compute_task(cfg, ds, name, budget, prompts, alphabet_size, manifest, g
     beam = genbench.eval_budget_to_beam(budget, alphabet_size)
     # tune lookahead on VALIDATION only — never on test outcomes
     val_prompts = [p for p in genbench.DEFAULT_PROMPTS if p in ds.val][:1] or [b"the "]
-    tune_len = 64 if name in SLOW_BACKENDS else 128
+    tune_len = 16 if name in VERY_SLOW_BACKENDS else 64 if name in SLOW_BACKENDS else 128
     la, tune = genbench.tune_lookahead(
         backend,
         ds.val,
@@ -301,9 +335,9 @@ def _gen_compute_task(cfg, ds, name, budget, prompts, alphabet_size, manifest, g
         seed=cfg.seed,
         backend_options=cfg.backend_options.get(name, {}),
     )
-    prompts = prompts[: _n_prompts(cfg, name)]
+    prompts = prompts[: _n_compute_prompts(cfg, name)]
     cfg_gen = GenerationConfig(
-        length=cfg.gen_length,
+        length=_compute_out_len(cfg, name),
         beam_width=beam,
         lookahead=la,
         temperature=cfg.temperature,
@@ -403,8 +437,8 @@ def run(cfg: BenchConfig) -> None:
             if "generation" not in cfg.skip:
                 _gen_search_task(cfg, ds, name, prompts, manifest, gen_dir)
                 for budget in cfg.budgets:
-                    if name in SLOW_BACKENDS and budget > 2000:
-                        continue  # slow tier only gets the smaller budget
+                    if name in SLOW_BACKENDS | VERY_SLOW_BACKENDS and budget > 2000:
+                        continue  # slow tiers only get the smaller budget
                     _gen_compute_task(
                         cfg, ds, name, budget, prompts, len(alphabet), manifest, gen_dir
                     )
