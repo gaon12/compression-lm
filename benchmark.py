@@ -111,7 +111,7 @@ def _make_zip(results_dir: Path) -> Path:
     it is the checkpoint + per-position evidence)."""
     import zipfile
 
-    out = results_dir.parent / "results.zip"
+    out = results_dir.parent / (results_dir.name + ".zip")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for f in sorted(results_dir.rglob("*")):
             if f.is_file():
