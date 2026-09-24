@@ -61,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--skip", default="", help="comma-separated: teacher,generation,overhead,speed,zstd_dict"
     )
+    p.add_argument(
+        "--assemble-only",
+        action="store_true",
+        help="rebuild CSVs/plots/report from existing raw rows",
+    )
     args = p.parse_args(argv)
 
     names = tuple(s.strip() for s in args.backends.split(",")) if args.backends else None
@@ -81,7 +86,13 @@ def main(argv: list[str] | None = None) -> int:
         n_prompts=args.prompts,
         skip=frozenset(s.strip() for s in args.skip.split(",") if s.strip()),
     )
-    run(cfg)
+    if args.assemble_only:
+        from compression_lm.bench.datasets import load_tiny_shakespeare
+        from compression_lm.bench.runner import assemble
+
+        assemble(cfg, load_tiny_shakespeare(cfg.dataset, seed=cfg.seed))
+    else:
+        run(cfg)
     print(f"results written under {cfg.out_dir}")
     return 0
 

@@ -110,6 +110,44 @@ comparable *within* a scorer, not across scorer types (dictionary and
 concatenation scoring have different overhead baselines). `copy%` is
 8-gram corpus overlap; `self-rep%` catches degenerate looping.
 
+## Second-phase benchmark
+
+A rigorous, resumable benchmark separating three questions:
+
+1. **Prediction** — teacher-forced next-byte scoring on held-out test
+   positions (all 256 candidates per position, average-rank + expected
+   top-k under random tie-breaking, pseudo-BPB).
+2. **Equal-search generation** — identical beam/lookahead/temperature/
+   prompts/context for every backend.
+3. **Equal-compute generation** — identical candidate-evaluation budget
+   per output byte; lookahead tuned on *validation* only.
+
+```bash
+python benchmark.py --dataset data/tiny_shakespeare.txt --mode quick   # ~1h
+python benchmark.py --dataset data/tiny_shakespeare.txt --mode full    # ~3h
+python benchmark.py --mode quick --backends deflate,zstd --positions 200
+python benchmark.py --assemble-only   # rebuild CSVs/plots/report from raw rows
+```
+
+Data splits: contiguous train/val/test ranges (80/10/~10%) with 4 KiB
+discarded boundary gaps — only train primes compressors, only validation
+tunes hyperparameters, only test positions are scored. Seed 42.
+
+Key flags: `--positions`, `--contexts`, `--budgets`, `--prompts`,
+`--workers`, `--seed`, `--skip teacher,generation,overhead,speed`.
+
+Outputs under `results/`: `summary.csv`, `teacher_forced.csv`,
+`generation_equal_search.csv`, `generation_equal_compute.csv`,
+`copy_metrics.csv`, `speed.csv`, `quantization.csv`, `overhead.csv`,
+`backend_status.csv`, `generations/`, `plots/`, `config.json`,
+`report.md`, `raw/` (checkpoints — re-running resumes where it stopped).
+
+Reading the results: **`teacher_forced_pseudo_bpb`** is the held-out
+next-byte metric; **`generated_compression_bpb`** only measures how
+compressible a model's *own* output is — a backend that copies the corpus
+verbatim scores a *lower* gen-BPB. They are never interchangeable; see
+`copy_metrics.csv` for the retrieval/copy analysis.
+
 ## Development
 
 ```bash
@@ -119,7 +157,9 @@ python -m pytest                # test suite
 
 Layout: `src/compression_lm/backends/` (scorer strategies + registry),
 `engine.py` (beam search + generation loop), `metrics.py` (quality
-metrics), `compare.py` (multi-backend runs + reports), `cli.py`.
+metrics), `compare.py` (multi-backend runs + reports), `cli.py`,
+`bench/` (datasets / teacher / copymetrics / genbench / instrument /
+runner / plots / report), `benchmark.py` (benchmark entry point).
 
 ## License
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from .. import backends
 from ..backends.zstd_backend import ZstdDictBackend
 from ..engine import GenerationConfig, corpus_alphabet
-from . import genbench, instrument, reporting, teacher
+from . import genbench, instrument, plots, report, reporting, teacher
 from .datasets import Dataset, load_tiny_shakespeare, sample_positions
 
 #: Workload tiers by per-eval cost (measured, not guessed):
@@ -550,5 +550,48 @@ def assemble(cfg: BenchConfig, ds: Dataset) -> dict:
     )
     status = [r for r in rows if r.get("status") in ("skipped", "error") and "mode" not in r]
     reporting.write_csv(cfg.out_dir / "backend_status.csv", status)
+
+    # summary.csv — one row per backend, the headline metrics merged
+    tf32 = {r["backend"]: r for r in tf if str(r.get("context_provided")) == "32768"}
+    gen_s = {
+        r["backend"]: r
+        for r in rows
+        if r.get("mode") == "equal_search" and r.get("prompt") == "__mean__"
+    }
+    mb = {r["backend"]: r for r in speed_rows if r.get("source") == "microbench"}
+    all_names = sorted(set(tf32) | set(gen_s) | set(mb) | {r["backend"] for r in status})
+    summary = []
+    for name in all_names:
+        t, g, s = tf32.get(name, {}), gen_s.get(name, {}), mb.get(name, {})
+        summary.append(
+            {
+                "backend": name,
+                "tf_top1": t.get("top1"),
+                "tf_top1_exp": t.get("top1_exp"),
+                "tf_top5_exp": t.get("top5_exp"),
+                "tf_mrr": t.get("mrr"),
+                "tf_pseudo_bpb": t.get("teacher_forced_pseudo_bpb"),
+                "tf_evals_per_sec": t.get("evals_per_sec"),
+                "tf_ctx_effective": t.get("context_effective"),
+                "tf_n_positions": t.get("n_positions"),
+                "gen_bpb": g.get("generated_compression_bpb"),
+                "gen_copy_run": g.get("copy_run"),
+                "gen_overlap32": g.get("overlap_32gram"),
+                "gen_self_rep8": g.get("self_rep_8"),
+                "gen_utf8_valid": g.get("utf8_valid"),
+                "microbench_evals_per_sec": s.get("evals_per_sec"),
+            }
+        )
+    reporting.write_csv(cfg.out_dir / "summary.csv", summary)
+
+    # plots + final report — a rendering failure must not lose results
+    try:
+        plots.generate_plots(cfg.out_dir)
+    except Exception as exc:
+        print(f"[warn] plots failed: {type(exc).__name__}: {exc}")
+    try:
+        report.build_report(cfg.out_dir)
+    except Exception as exc:
+        print(f"[warn] report build failed: {type(exc).__name__}: {exc}")
 
     return {"teacher_rows": tf, "all_rows": rows}
