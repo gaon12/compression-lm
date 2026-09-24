@@ -69,6 +69,120 @@ def probe_overhead(
     return row
 
 
+def _plain_compressor(name: str, options: dict):
+    """Method-A compressor: a backend's plain one-shot compress, used to
+    compare concat-delta scores against each backend's actual scoring
+    method (spec §14 experimental comparison). Returns None if the
+    backend has no meaningful plain-compress path."""
+    import bz2
+    import gzip
+    import lzma
+    import zlib
+
+    # mirror each backend's own default so A/B compare the same settings
+    default_level = {
+        "deflate": 9,
+        "zlib": 9,
+        "gzip": 9,
+        "bzip2": 9,
+        "lzma": 6,
+        "lzma2": 6,
+        "xz": 6,
+        "zstd": 3,
+        "zstd_dict": 3,
+        "brotli": 5,
+        "lz4": 1,
+        "lzo": 9,
+    }.get(name, 3)
+    level = int(
+        options.get(
+            "level",
+            options.get(
+                "compresslevel",
+                options.get("quality", options.get("preset", default_level)),
+            ),
+        )
+    )
+    if name == "deflate":
+        return lambda d: zlib.compress(d, level)[2:-4]  # strip zlib wrapper
+    if name == "zlib":
+        return lambda d: zlib.compress(d, level)
+    if name == "gzip":
+        return lambda d: gzip.compress(d, compresslevel=level)
+    if name == "bzip2":
+        return lambda d: bz2.compress(d, compresslevel=level)
+    if name in ("lzma", "lzma2", "xz"):
+        fmt = {"lzma": lzma.FORMAT_ALONE, "xz": lzma.FORMAT_XZ}.get(name, lzma.FORMAT_RAW)
+        filt = [{"id": lzma.FILTER_LZMA2, "preset": level}]
+        return lambda d: lzma.compress(
+            d,
+            format=fmt,
+            filters=filt if fmt == lzma.FORMAT_RAW else None,
+            preset=level if fmt != lzma.FORMAT_RAW else None,
+        )
+    if name == "zstd":
+        import zstandard
+
+        c = zstandard.ZstdCompressor(level=level)
+        return c.compress
+    if name == "brotli":
+        import brotli
+
+        return lambda d: brotli.compress(d, quality=level)
+    if name == "lz4":
+        import lz4.block
+
+        return lambda d: lz4.block.compress(d, store_size=False)
+    if name == "snappy":
+        import snappy
+
+        return snappy.compress
+    return None
+
+
+def compare_scoring_methods(
+    backend: Backend,
+    context: bytes,
+    *,
+    candidates: Sequence[bytes] | None = None,
+    backend_options: dict | None = None,
+) -> dict:
+    """Compare concat-delta (A) vs the backend's scorer delta (B).
+
+    Method A: ``len(compress(ctx + c)) - len(compress(ctx))`` using the
+    backend's plain compressor — the universally implementable score.
+    Method B: whatever ``scorer.measure`` actually does (state clone /
+    dictionary / one-shot). For one-shot backends A and B coincide by
+    construction; for clone/dict scorers the agreement (or drift) is the
+    interesting measurement. Experimental — never used for ranking.
+    """
+    opts = dict(backend_options or {})
+    row: dict = {"backend": backend.name, "scoring_method": None}
+    plain = _plain_compressor(backend.name, opts)
+    scorer = backend.prepare(context, **opts)
+    row["scoring_method"] = scorer_method(scorer)
+    if plain is None:
+        row["note"] = "no plain-compress path; comparison skipped"
+        return row
+    cands = candidates or [bytes([i % 256]) for i in range(64)]
+    base = len(plain(context))
+    a_vals, b_vals = [], []
+    for c in cands:
+        a_vals.append(len(plain(context + c)) - base)
+        b_vals.append(scorer.measure(c))
+    row["n_candidates"] = len(cands)
+    row["methodA_mean"] = statistics.fmean(a_vals)
+    row["methodB_mean"] = statistics.fmean(b_vals)
+    diffs = [b - a for a, b in zip(a_vals, b_vals, strict=True)]
+    row["B_minus_A_mean"] = statistics.fmean(diffs)
+    row["B_minus_A_max"] = max(diffs)
+    row["B_minus_A_min"] = min(diffs)
+    row["pearson_A_B"] = pearson(a_vals, b_vals)
+    row["spearman_A_B"] = spearman(a_vals, b_vals)
+    row["identical_frac"] = sum(1 for d in diffs if d == 0) / len(diffs)
+    return row
+
+
 def rss_bytes() -> int | None:
     """Current process RSS in bytes, or None if psutil is unavailable."""
     if psutil is None:

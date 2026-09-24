@@ -59,7 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--prompts", type=int, default=10)
     p.add_argument(
-        "--skip", default="", help="comma-separated: teacher,generation,overhead,speed,zstd_dict"
+        "--skip",
+        default="",
+        help="comma-separated: teacher,generation,overhead,scorecmp,speed,zstd_dict",
     )
     p.add_argument(
         "--assemble-only",

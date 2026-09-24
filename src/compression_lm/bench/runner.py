@@ -264,8 +264,39 @@ def _overhead_task(cfg, ds, name, manifest):
             ds.train[-ctx_size:],
             backend_options=cfg.backend_options.get(name, {}),
         )
+        row["task"] = "overhead"
     except Exception as exc:
-        row = {"backend": name, "status": "error", "note": f"{type(exc).__name__}: {exc}"}
+        row = {
+            "backend": name,
+            "task": "overhead",
+            "status": "error",
+            "note": f"{type(exc).__name__}: {exc}",
+        }
+    _save_rows(cfg, key, [row])
+    manifest.mark(key)
+
+
+def _scorecmp_task(cfg, ds, name, manifest):
+    """Spec §14 experimental A-vs-B scoring-method comparison."""
+    key = f"scorecmp:{name}"
+    if key in manifest.done:
+        return
+    backend = backends.get(name)
+    ctx_size = min(8192, len(ds.train))
+    try:
+        row = instrument.compare_scoring_methods(
+            backend,
+            ds.train[-ctx_size:],
+            backend_options=cfg.backend_options.get(name, {}),
+        )
+        row["task"] = "scoring_compare"
+    except Exception as exc:
+        row = {
+            "backend": name,
+            "task": "scoring_compare",
+            "status": "error",
+            "note": f"{type(exc).__name__}: {exc}",
+        }
     _save_rows(cfg, key, [row])
     manifest.mark(key)
 
@@ -440,6 +471,8 @@ def run(cfg: BenchConfig) -> None:
         try:
             if "overhead" not in cfg.skip:
                 _overhead_task(cfg, ds, name, manifest)
+            if "scorecmp" not in cfg.skip:
+                _scorecmp_task(cfg, ds, name, manifest)
             if "speed" not in cfg.skip:
                 _speed_task(cfg, ds, name, manifest)
             if "teacher" not in cfg.skip:
@@ -558,7 +591,11 @@ def assemble(cfg: BenchConfig, ds: Dataset) -> dict:
     reporting.write_csv(cfg.out_dir / "speed.csv", speed_rows)
     reporting.write_csv(
         cfg.out_dir / "overhead.csv",
-        [r for r in rows if r.get("scoring_method") or r.get("task") == "overhead"],
+        [r for r in rows if r.get("task") == "overhead"],
+    )
+    reporting.write_csv(
+        cfg.out_dir / "scoring_methods.csv",
+        [r for r in rows if r.get("task") == "scoring_compare"],
     )
     status = [r for r in rows if r.get("status") in ("skipped", "error") and "mode" not in r]
     reporting.write_csv(cfg.out_dir / "backend_status.csv", status)
