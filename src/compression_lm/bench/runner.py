@@ -30,7 +30,7 @@ from .datasets import Dataset, load_tiny_shakespeare, sample_positions
 #: vslow  — one-shot ~1-4 ms/eval: 1/10 positions, minimal prompts,
 #:          64-byte outputs for equal-compute. Reductions are recorded in
 #:          every row (n_positions / n_prompts), never silent.
-SLOW_BACKENDS = frozenset({"bzip2", "zstd_dict", "lzo"})
+SLOW_BACKENDS = frozenset({"brotli", "bzip2", "zstd_dict", "lzo"})
 VERY_SLOW_BACKENDS = frozenset({"lzma", "lzma2", "xz"})
 
 #: Effective-context caps for the context sweep: (cap_bytes, reason).
@@ -94,21 +94,25 @@ def _n_positions(cfg: BenchConfig, backend: str) -> int:
 
 
 def _n_prompts(cfg: BenchConfig, backend: str) -> int:
+    """Equal-search prompt counts (spec asks for >=10 in the final run)."""
     if backend in VERY_SLOW_BACKENDS:
         return min(cfg.n_prompts, 1 if cfg.mode == "quick" else 2)
     if backend in SLOW_BACKENDS:
-        return min(cfg.n_prompts, 4 if cfg.mode == "quick" else 6)
-    return cfg.n_prompts
+        return min(cfg.n_prompts, 2 if cfg.mode == "quick" else 4)
+    return min(cfg.n_prompts, 4 if cfg.mode == "quick" else 10)
 
 
-def _n_compute_prompts(cfg: BenchConfig, backend: str) -> int:
+def _n_compute_prompts(cfg: BenchConfig, backend: str, budget: int) -> int:
     """Equal-compute prompt counts: fewer than equal-search since each
     prompt at budget 2000 is already ~0.5M candidate evaluations."""
     if backend in VERY_SLOW_BACKENDS:
         return 1
     if backend in SLOW_BACKENDS:
         return min(cfg.n_prompts, 2)
-    return cfg.n_prompts
+    base = _n_prompts(cfg, backend)
+    if budget > 2000:
+        return max(1, base // 2)
+    return base
 
 
 def _compute_out_len(cfg: BenchConfig, backend: str) -> int:
@@ -195,13 +199,14 @@ def _teacher_task(
     manifest: _Manifest,
     eff_cache: dict,
 ) -> None:
-    key = f"teacher:{name}:{provided_ctx}"
+    n = _n_positions(cfg, name)
+    key = f"teacher:{name}:{provided_ctx}:{n}"
     if key in manifest.done:
         return
     eff, reason = _eff_ctx(name, provided_ctx)
     if eff in eff_cache and eff_cache[eff] != provided_ctx:
         # same effective context already measured — copy stats, mark dedup
-        src = _row_path(cfg, f"teacher:{name}:{eff_cache[eff]}")
+        src = _row_path(cfg, f"teacher:{name}:{eff_cache[eff]}:{n}")
         if src.exists():
             rows = json.loads(src.read_text(encoding="utf-8"))
             for r in rows:
@@ -216,7 +221,6 @@ def _teacher_task(
     # one-shot backends are compute-capped; generation keeps the class
     # default for 32 KiB parity with deflate.
     backend.context_limit = _eff_ctx(name, provided_ctx)[0]
-    n = _n_positions(cfg, name)
     pos = positions[:n]
     backend_options = cfg.backend_options.get(name, {})
     recs = teacher.evaluate_positions(
@@ -241,7 +245,7 @@ def _teacher_task(
     _save_rows(cfg, key, [row])
     # per-position detail for downstream quantization analysis
     reporting.write_json(
-        cfg.raw_dir / "positions" / f"{name}_{provided_ctx}.json",
+        cfg.raw_dir / "positions" / f"{name}_{provided_ctx}_{n}.json",
         [r.__dict__ for r in recs],
     )
     eff_cache[eff] = provided_ctx
@@ -287,11 +291,12 @@ def _speed_task(cfg, ds, name, manifest):
 
 
 def _gen_search_task(cfg, ds, name, prompts, manifest, gen_dir):
-    key = f"gensearch:{name}"
+    np_ = _n_prompts(cfg, name)
+    key = f"gensearch:{name}:{np_}"
     if key in manifest.done:
         return
     backend = backends.get(name)
-    prompts = prompts[: _n_prompts(cfg, name)]
+    prompts = prompts[:np_]
     cfg_gen = GenerationConfig(
         length=cfg.gen_length,
         beam_width=cfg.beam,
@@ -317,14 +322,16 @@ def _gen_search_task(cfg, ds, name, prompts, manifest, gen_dir):
 
 
 def _gen_compute_task(cfg, ds, name, budget, prompts, alphabet_size, manifest, gen_dir):
-    key = f"gencompute:{name}:{budget}"
+    np_ = _n_compute_prompts(cfg, name, budget)
+    out_len = _compute_out_len(cfg, name)
+    key = f"gencompute:{name}:{budget}:{np_}x{out_len}"
     if key in manifest.done:
         return
     backend = backends.get(name)
     beam = genbench.eval_budget_to_beam(budget, alphabet_size)
     # tune lookahead on VALIDATION only — never on test outcomes
     val_prompts = [p for p in genbench.DEFAULT_PROMPTS if p in ds.val][:1] or [b"the "]
-    tune_len = 16 if name in VERY_SLOW_BACKENDS else 64 if name in SLOW_BACKENDS else 128
+    tune_len = 16 if name in VERY_SLOW_BACKENDS else 32 if name in SLOW_BACKENDS else 64
     la, tune = genbench.tune_lookahead(
         backend,
         ds.val,
@@ -335,9 +342,9 @@ def _gen_compute_task(cfg, ds, name, budget, prompts, alphabet_size, manifest, g
         seed=cfg.seed,
         backend_options=cfg.backend_options.get(name, {}),
     )
-    prompts = prompts[: _n_compute_prompts(cfg, name)]
+    prompts = prompts[:np_]
     cfg_gen = GenerationConfig(
-        length=_compute_out_len(cfg, name),
+        length=out_len,
         beam_width=beam,
         lookahead=la,
         temperature=cfg.temperature,
@@ -383,10 +390,15 @@ def run(cfg: BenchConfig) -> None:
     prompts = genbench.validate_prompts(genbench.DEFAULT_PROMPTS, ds.train)
     alphabet = corpus_alphabet(ds.train)
 
-    # one shared position list; slow backends take a prefix subset
-    max_positions = cfg.n_positions or (10000 if cfg.mode == "full" else 1000)
-    positions = sample_positions(ds.test_span, max_positions, seed=cfg.seed)
-    reporting.write_json(cfg.raw_dir / "positions.json", positions)
+    # one canonical position list: always the 10k-sample so quick-mode
+    # subsets are exact prefixes of the full run (comparable point-for-point)
+    list_n = max(10000, cfg.n_positions or 0)
+    all_positions = sample_positions(ds.test_span, list_n, seed=cfg.seed)
+    positions = all_positions
+    reporting.write_json(
+        cfg.raw_dir / "positions.json",
+        {"n_sampled": list_n, "positions": all_positions},
+    )
 
     meta = {
         "dataset": ds.split_meta(),
