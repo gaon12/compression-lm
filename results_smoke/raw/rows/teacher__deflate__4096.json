@@ -1,0 +1,32 @@
+[
+  {
+    "backend": "deflate",
+    "family": "deflate",
+    "mode": "quick",
+    "context_provided": 4096,
+    "context_effective": 4096,
+    "n_positions": 50,
+    "top1": 0.04,
+    "top5": 0.12,
+    "top10": 0.22,
+    "mean_rank": 23.81,
+    "median_rank": 22.5,
+    "mrr": 0.13125790110159583,
+    "mean_true_delta_bits": 4.64,
+    "teacher_forced_pseudo_bpb": 7.125731130732596,
+    "pseudo_ppl": 139.65574675824132,
+    "tie_candidate_frac": 0.983359375,
+    "pct_true_tied": 0.96,
+    "pct_true_in_best_tie": 0.58,
+    "mean_unique_scores": 4.26,
+    "mean_max_tie": 133.04,
+    "evals": 12800,
+    "evals_per_sec": 31879.876599153555,
+    "positions_per_sec": 119.48550495168367,
+    "prep_seconds": 0.01695359975565225,
+    "score_seconds": 0.4015072003239766,
+    "seconds": 0.4184608000796288,
+    "note": "",
+    "dedup": false
+  }
+]

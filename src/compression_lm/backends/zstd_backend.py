@@ -13,7 +13,15 @@ import threading
 from collections.abc import Callable
 from typing import ClassVar
 
-from .base import SPEED_FAST, Backend, DictScorer, OptionalBackend, Scorer
+from .base import (
+    SPEED_FAST,
+    SPEED_SLOW,
+    Backend,
+    DictScorer,
+    OneShotScorer,
+    OptionalBackend,
+    Scorer,
+)
 
 
 class ZstdBackend(OptionalBackend):
@@ -43,6 +51,43 @@ class ZstdBackend(OptionalBackend):
             return compressor.compress(candidate)
 
         return DictScorer(compress_with_dict, context)
+
+
+class ZstdDictBackend(OptionalBackend):
+    """zstd with a *trained* dictionary — the dictionary-as-model experiment.
+
+    Unlike :class:`ZstdBackend` (raw context as dict), this backend is
+    constructed with a dictionary trained from the TRAIN split only —
+    validation/test bytes never reach dictionary training. Scoring then
+    compresses ``context + candidate`` as payload against that dictionary:
+    the dict supplies corpus-level knowledge while the payload supplies
+    local context. Kept as a separate backend name so its results are never
+    mixed with plain zstd.
+    """
+
+    name = "zstd_dict"
+    family = "lz77+entropy"
+    package = "zstandard"
+    module: ClassVar[str] = "zstandard"
+    speed = SPEED_SLOW  # payload includes full context per candidate
+    context_limit = 32768  # compute cap for the one-shot payload
+
+    def __init__(self, dict_bytes: bytes, dict_kind: str = "trained") -> None:
+        self.dict_bytes = dict_bytes
+        self.dict_kind = dict_kind
+
+    def prepare(self, context: bytes, *, level: int = 3, **_: object) -> Scorer:
+        zstd = self._import()
+        dict_data = zstd.ZstdCompressionDict(self.dict_bytes)
+        local = threading.local()
+
+        def compress(data: bytes) -> bytes:
+            c = getattr(local, "compressor", None)
+            if c is None:
+                c = local.compressor = zstd.ZstdCompressor(level=level, dict_data=dict_data)
+            return c.compress(data)
+
+        return OneShotScorer(compress, context)
 
 
 def register_into(register: Callable[[str, Callable[[], Backend]], None]) -> None:

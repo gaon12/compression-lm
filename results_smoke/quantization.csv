@@ -1,0 +1,2 @@
+backend,family,mode,context_provided,context_effective,n_positions,mean_unique_scores,mean_max_tie,tie_candidate_frac,pct_true_tied,pct_true_in_best_tie,dedup,note
+deflate,deflate,quick,4096,4096,50,4.26,133.04,0.983359375,0.96,0.58,False,

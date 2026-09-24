@@ -1,0 +1,2 @@
+backend,scoring_method,context_bytes,delta_novel_0B,delta_novel_1B,delta_novel_2B,delta_novel_4B,delta_novel_8B,delta_novel_16B,delta_novel_32B,delta_novel_64B
+deflate,incremental_state,8192,0,5,8,14,28,44,75,141

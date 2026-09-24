@@ -49,6 +49,8 @@ class PositionRecord:
     unique_scores: int
     max_tie: int  # size of the largest same-score group
     in_best_tie: bool  # true byte shares the best score with others/alone
+    better_count: int  # candidates scoring strictly better than the true byte
+    true_tie_size: int  # candidates scoring equal to the true byte
     n_candidates: int
     prep_seconds: float
     score_seconds: float
@@ -130,6 +132,8 @@ def evaluate_positions(
                 unique_scores=len(counts),
                 max_tie=max(counts.values()),
                 in_best_tie=s_true == min(scores),
+                better_count=rank_best - 1,
+                true_tie_size=counts[s_true],
                 n_candidates=len(candidates),
                 prep_seconds=t1 - t0,
                 score_seconds=t2 - t1,
@@ -141,6 +145,22 @@ def evaluate_positions(
         if pool is not None:
             pool.shutdown(wait=False)
     return records
+
+
+def _expected_topk(better: int, tie: int, k: int) -> float:
+    """Expected hit under uniform-random selection inside tie groups.
+
+    The true byte's score class occupies ranks better+1 .. better+tie.
+    If the whole class fits inside top-k it's a certain hit; if it starts
+    beyond k it's a certain miss; straddling contributes the covered
+    fraction — the probability that a fair tie-break places the true byte
+    inside the top-k cutoff.
+    """
+    if better >= k:
+        return 0.0
+    if better + tie <= k:
+        return 1.0
+    return (k - better) / tie
 
 
 def aggregate_records(
@@ -182,6 +202,11 @@ def aggregate_records(
         "top1": sum(1 for r in ranks if r <= 1.0) / n,
         "top5": sum(1 for r in ranks if r <= 5.0) / n,
         "top10": sum(1 for r in ranks if r <= 10.0) / n,
+        # expected accuracy under uniform-random tie-breaking — more
+        # informative than average-rank top-k when quantization is extreme
+        "top1_exp": sum(_expected_topk(r.better_count, r.true_tie_size, 1) for r in records) / n,
+        "top5_exp": sum(_expected_topk(r.better_count, r.true_tie_size, 5) for r in records) / n,
+        "top10_exp": sum(_expected_topk(r.better_count, r.true_tie_size, 10) for r in records) / n,
         "mean_rank": statistics.fmean(ranks),
         "median_rank": statistics.median(ranks),
         "mrr": statistics.fmean(1.0 / r for r in ranks),

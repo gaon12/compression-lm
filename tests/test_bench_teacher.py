@@ -6,10 +6,22 @@ import pytest
 
 from compression_lm import backends
 from compression_lm.bench.teacher import (
+    _expected_topk,
     aggregate_records,
     evaluate_positions,
     rank_and_nll,
 )
+
+
+def test_expected_topk_boundary_cases():
+    # strictly worse than top-k
+    assert _expected_topk(better=10, tie=5, k=5) == 0.0
+    # tie group entirely inside top-k
+    assert _expected_topk(better=0, tie=4, k=5) == 1.0
+    # straddling: true byte's score class is ranks 1..100, k=1 -> 1/100
+    assert _expected_topk(better=0, tie=100, k=1) == pytest.approx(0.01)
+    # ranks 3..12 straddle k=10 -> 8 of 10 members covered
+    assert _expected_topk(better=2, tie=10, k=10) == pytest.approx(0.8)
 
 
 def test_rank_and_nll_unique_best():
@@ -110,6 +122,12 @@ def test_quantization_fields_present():
         "pct_true_in_best_tie",
         "mean_unique_scores",
         "mean_max_tie",
+        "top1_exp",
+        "top5_exp",
+        "top10_exp",
     ):
         assert key in row
     assert 0.0 <= row["tie_candidate_frac"] <= 1.0
+    # expected top-k must be at least as large as deterministic avg-rank top-k
+    assert row["top1_exp"] >= row["top1"]
+    assert row["top1_exp"] <= row["top5_exp"] <= row["top10_exp"]

@@ -120,6 +120,7 @@ def run_generation(
     mode: str,
     out_dir: Path | None = None,
     context_provided: int = 0,
+    file_tag: str = "",
 ) -> list[dict]:
     """Generate one output per prompt and collect per-output rows.
 
@@ -158,7 +159,8 @@ def run_generation(
         row.update(measure_output(res.text, corpus, res.bits_per_byte))
         if out_dir is not None:
             out_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"{mode}_{backend.name}_{idx:02d}.txt"
+            tag = f"{file_tag}_" if file_tag else ""
+            fname = f"{mode}_{tag}{backend.name}_{idx:02d}.txt"
             (out_dir / fname).write_bytes(res.text)
             row["output_file"] = str(out_dir / fname)
         rows.append(row)
