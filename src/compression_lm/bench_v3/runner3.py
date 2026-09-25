@@ -85,6 +85,7 @@ class Bench3Config:
     skip: frozenset[str] = frozenset()
     assemble_only: bool = False
     zip_after: bool = False
+    command: str = ""  # verbatim CLI invocation, recorded for reproducibility
     raw_dir: Path = field(init=False)
 
     def __post_init__(self):
@@ -854,6 +855,7 @@ def run(cfg: Bench3Config) -> Path:
             manifest.mark(f"dataset:{ds_name}")
             continue
         reporting.write_json(cfg.raw_dir / f"dataset_{ds.name}.json", ds.split_meta())
+        reporting.write_json(cfg.out_dir / f"config_{ds.name}.json", _cfg_meta(cfg, ds.name))
         # canonical shared position list (same seed -> same list as v2)
         list_n = max(10000, cfg.n_positions or 0)
         positions = bench_ds.sample_positions(ds.test_span, list_n, seed=cfg.seed)
@@ -985,6 +987,29 @@ def _discpos_all_tied(cfg: Bench3Config, row: dict) -> float | None:
         return None
     recs = json.loads(path.read_text(encoding="utf-8"))
     return sum(1 for r in recs if r.get("unique_scores") == 1) / max(1, len(recs))
+
+
+def _cfg_meta(cfg: Bench3Config, dataset: str) -> dict:
+    """Explicit settings for one dataset run — reproducibility record."""
+    return {
+        "dataset": dataset,
+        "command": cfg.command,
+        "seed": cfg.seed,
+        "gap": cfg.gap,
+        "teacher_ctxs": list(cfg.teacher_ctxs),
+        "disc_ctx": DISC_CTX,
+        "disc_lengths": list(cfg.disc_lengths),
+        "eval_budgets": list(cfg.eval_budgets),
+        "time_budgets": list(cfg.time_budgets),
+        "n_positions": cfg.n_positions,
+        "n_prompts": cfg.n_prompts,
+        "gen_length": cfg.gen_length,
+        "workers": cfg.workers,
+        "snappy_sweep_budgets": list(SNAPPY_SWEEP_BUDGETS),
+        "wikitext2_source": wikitext.URL,
+        "package_versions": instrument.package_versions(),
+        "env": reporting.environment_info(),
+    }
 
 
 def assemble(cfg: Bench3Config) -> None:
@@ -1125,25 +1150,29 @@ def assemble(cfg: Bench3Config) -> None:
         ],
     )
 
-    cfg_meta = {
-        "dataset": cfg.dataset,
-        "seed": cfg.seed,
-        "gap": cfg.gap,
-        "teacher_ctxs": list(cfg.teacher_ctxs),
-        "disc_ctx": DISC_CTX,
-        "disc_lengths": list(cfg.disc_lengths),
-        "eval_budgets": list(cfg.eval_budgets),
-        "time_budgets": list(cfg.time_budgets),
-        "n_positions": cfg.n_positions,
-        "n_prompts": cfg.n_prompts,
-        "gen_length": cfg.gen_length,
-        "workers": cfg.workers,
-        "snappy_sweep_budgets": list(SNAPPY_SWEEP_BUDGETS),
-        "wikitext2_source": wikitext.URL,
-        "package_versions": instrument.package_versions(),
-        "env": reporting.environment_info(),
-    }
-    reporting.write_json(cfg.out_dir / "config.json", cfg_meta)
+    cfg_meta = _cfg_meta(cfg, cfg.dataset)
+    # Per-dataset run configs live in config_<ds>.json (written by run()).
+    # --assemble-only never fabricates one — a missing file just means that
+    # dataset's run predates config logging.
+    cfg_path = cfg.out_dir / f"config_{cfg.dataset}.json"
+    if not cfg.assemble_only and not cfg_path.exists():
+        reporting.write_json(cfg_path, cfg_meta)
+    runs = {}
+    for p in sorted(cfg.out_dir.glob("config_*.json")):
+        try:
+            meta = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        ds_key = meta.get("dataset") or p.stem.removeprefix("config_")
+        runs[ds_key] = meta
+    reporting.write_json(
+        cfg.out_dir / "config.json",
+        {
+            "env": cfg_meta["env"],
+            "package_versions": cfg_meta["package_versions"],
+            "runs": runs,
+        },
+    )
 
     # summary.csv: one headline row per backend (4KiB teacher + gen stats)
     tf4 = [

@@ -78,6 +78,7 @@ def main() -> None:
         resume=a.resume,
         assemble_only=a.assemble_only,
         zip_after=a.zip,
+        command=" ".join(sys.argv),
     )
     runner3.run(cfg)
 

@@ -519,6 +519,33 @@ def _samples(results_dir: Path, gen: list[dict]) -> str:
     return "\n".join(parts) or "_no generated samples_"
 
 
+def _runs_section(cfg: dict) -> str:
+    """Per-dataset run configs incl. the verbatim CLI invocation."""
+    runs = cfg.get("runs") or {}
+    if not runs:
+        return "_run configuration not recorded_\n"
+    out = []
+    keys = (
+        "seed",
+        "gap",
+        "teacher_ctxs",
+        "disc_ctx",
+        "disc_lengths",
+        "eval_budgets",
+        "time_budgets",
+        "n_positions",
+        "n_prompts",
+        "gen_length",
+        "workers",
+    )
+    for ds, meta in sorted(runs.items()):
+        cmd = meta.get("command") or "(not recorded — run predates command logging)"
+        keep = {k: meta[k] for k in keys if k in meta}
+        out.append(f"### {ds}\n\n```\n{cmd}\n```\n")
+        out.append("```json\n" + json.dumps(keep, indent=2) + "\n```\n")
+    return "\n".join(out)
+
+
 def build_report(results_dir: Path) -> Path:
     tf = _read_csv(results_dir / "teacher_forced_1byte.csv")
     disc = _read_csv(results_dir / "continuation_discrimination.csv")
@@ -583,7 +610,9 @@ def build_report(results_dir: Path) -> Path:
         + "\n```\n",
         "## Datasets\n",
         "```json\n" + json.dumps(ds_meta, indent=2) + "\n```\n",
-        "## Backend options (recorded verbatim)\n",
+        "## Runs (exact commands)\n",
+        _runs_section(cfg),
+        "\n## Backend options (recorded verbatim)\n",
         _opts_table(opts),
         "\n## Backend status\n",
         _status_section(status, warns),
