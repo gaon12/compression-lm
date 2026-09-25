@@ -55,15 +55,18 @@ def _tf_table(rows: list[dict]) -> str:
     rows = [r for r in rows if r.get("status") == "ok"]
     if not rows:
         return "_no rows_"
-    rows = sorted(rows, key=lambda r: _f(r.get("top1_exp")), reverse=True)
+    rows = sorted(
+        rows, key=lambda r: (r.get("dataset", ""), -_f(r.get("top1_exp")))
+    )
     return md_table(
         [
-            "backend", "ctx_eff", "n_pos", "top1_exp", "top1 95%CI",
+            "dataset", "backend", "ctx_eff", "n_pos", "top1_exp", "top1 95%CI",
             "top5_exp", "top10_exp", "MRR", "pseudo_BPB", "uniq", "all_tied",
             "evals/s",
         ],
         [
             [
+                r.get("dataset", "?"),
                 r["backend"],
                 r.get("context_effective", "?"),
                 r.get("n_positions", "?"),
@@ -90,15 +93,20 @@ def _disc_table(rows: list[dict], neg: str = "random") -> str:
         return "_no rows_"
     rows = sorted(
         rows,
-        key=lambda r: (r["backend"], _f(r.get("continuation_bytes"))),
+        key=lambda r: (
+            r.get("dataset", ""),
+            r["backend"],
+            _f(r.get("continuation_bytes")),
+        ),
     )
     return md_table(
         [
-            "backend", "len", "n_pos", "top1", "top1 95%CI", "top5", "MRR",
-            "mean_rank", "uniq", "all_tied", "evals/s",
+            "dataset", "backend", "len", "n_pos", "top1", "top1 95%CI",
+            "top5", "MRR", "mean_rank", "uniq", "all_tied", "evals/s",
         ],
         [
             [
+                r.get("dataset", "?"),
                 r["backend"],
                 r.get("continuation_bytes", "?"),
                 r.get("num_positions", "?"),
@@ -124,70 +132,82 @@ def _zstd_verdict(tf: list[dict]) -> str:
     lines = []
     for r in sorted(c4, key=lambda r: _f(r.get("top1_exp")), reverse=True):
         lines.append(
-            f"- `{r['backend']}`: top1_exp={fmt(_f(r.get('top1_exp')))}, "
+            f"- `{r['backend']}` ({r.get('dataset')}): "
+            f"top1_exp={fmt(_f(r.get('top1_exp')))}, "
             f"uniq={fmt(_f(r.get('mean_unique_scores')), '.1f')}, "
             f"bpb={fmt(_f(r.get('teacher_forced_pseudo_bpb')))}, "
             f"evals/s={fmt(_f(r.get('evals_per_sec')), '.0f')}"
         )
-    best = max(c4, key=lambda r: _f(r.get("top1_exp")))
-    worst = min(c4, key=lambda r: _f(r.get("top1_exp")))
-    gap = _f(best.get("top1_exp")) - _f(worst.get("top1_exp"))
-    verdict = (
-        f"Best mode: **{best['backend']}** "
-        f"(top1_exp={fmt(_f(best.get('top1_exp')))}); "
-        f"worst: {worst['backend']} ({fmt(_f(worst.get('top1_exp')))}). "
-        + (
-            "The modes differ materially — the v2 all-tied result was a "
-            "**scorer-semantics artifact**, not an algorithm limit."
-            if gap > 0.02
-            else "All modes score similarly — the v2 result reflects the "
-            "algorithm's actual 1-byte resolution limit."
+    verdicts = []
+    for ds in sorted({r.get("dataset") for r in c4}):
+        rows = [r for r in c4 if r.get("dataset") == ds]
+        best = max(rows, key=lambda r: _f(r.get("top1_exp")))
+        worst = min(rows, key=lambda r: _f(r.get("top1_exp")))
+        gap = _f(best.get("top1_exp")) - _f(worst.get("top1_exp"))
+        verdicts.append(
+            f"{ds}: best **{best['backend']}** "
+            f"(top1_exp={fmt(_f(best.get('top1_exp')))}); "
+            f"worst {worst['backend']} ({fmt(_f(worst.get('top1_exp')))}). "
+            + (
+                "Modes differ materially — the v2 all-tied result was a "
+                "**scorer-semantics artifact**, not an algorithm limit."
+                if gap > 0.02
+                else "All modes score similarly — the v2 result reflects "
+                "the algorithm's actual 1-byte resolution limit."
+            )
         )
-    )
-    return "\n".join(lines) + "\n\n" + verdict
+    return "\n".join(lines) + "\n\n" + "\n\n".join(verdicts)
 
 
 def _q3_ci_answer(tf4: list[dict]) -> str:
-    top = sorted(
-        [r for r in tf4 if r.get("status") == "ok"],
-        key=lambda r: _f(r.get("top1_exp")),
-        reverse=True,
-    )[:4]
-    if len(top) < 2:
-        return "_insufficient rows_"
     out = []
-    for a in top:
-        for b in top:
-            if a["backend"] >= b["backend"]:
-                continue
-            ov = _overlap(_ci(a.get("top1_exp_ci")), _ci(b.get("top1_exp_ci")))
-            if ov is None:
-                rel = "no CI"
-            elif ov:
-                rel = "statistically indistinguishable under this experiment"
-            else:
-                rel = "distinguishable"
-            out.append(
-                f"- {a['backend']} ({fmt(_f(a.get('top1_exp')))} "
-                f"{a.get('top1_exp_ci', '')}) vs {b['backend']} "
-                f"({fmt(_f(b.get('top1_exp')))} {b.get('top1_exp_ci', '')}): "
-                f"**{rel}**"
-            )
-    return "\n".join(out)
+    for ds in sorted({r.get("dataset") for r in tf4}):
+        top = sorted(
+            [
+                r
+                for r in tf4
+                if r.get("status") == "ok" and r.get("dataset") == ds
+            ],
+            key=lambda r: _f(r.get("top1_exp")),
+            reverse=True,
+        )[:4]
+        if len(top) < 2:
+            continue
+        out.append(f"### {ds}\n")
+        for a in top:
+            for b in top:
+                if a["backend"] >= b["backend"]:
+                    continue
+                ov = _overlap(_ci(a.get("top1_exp_ci")), _ci(b.get("top1_exp_ci")))
+                if ov is None:
+                    rel = "no CI"
+                elif ov:
+                    rel = "statistically indistinguishable under this experiment"
+                else:
+                    rel = "distinguishable"
+                out.append(
+                    f"- {a['backend']} ({fmt(_f(a.get('top1_exp')))} "
+                    f"{a.get('top1_exp_ci', '')}) vs {b['backend']} "
+                    f"({fmt(_f(b.get('top1_exp')))} {b.get('top1_exp_ci', '')}): "
+                    f"**{rel}**"
+                )
+    return "\n".join(out) or "_insufficient rows_"
 
 
 def _rawpair_table(rows: list[dict]) -> str:
     rows = [r for r in rows if r.get("status") == "ok"]
     if not rows:
         return "_no rows_"
+    rows = sorted(rows, key=lambda r: (r.get("dataset", ""), r["backend_a"]))
     return md_table(
         [
-            "pair", "ctx", "n_ctx", "n_cand", "spearman_mean",
+            "dataset", "pair", "ctx", "n_ctx", "n_cand", "spearman_mean",
             "top1_a(raw)", "top1_b(container)", "uniq_a", "uniq_b",
             "empty_a", "empty_b",
         ],
         [
             [
+                r.get("dataset", "?"),
                 f"{r['backend_a']} vs {r['backend_b']}",
                 r.get("context_bytes", "?"),
                 r.get("n_contexts", "?"),
@@ -394,13 +414,18 @@ def _correlations(tf4: list[dict], gen: list[dict], disc: list[dict]) -> str:
 
 def _purpose_table(tf4: list[dict], disc: list[dict], gen: list[dict], eetime: list[dict]) -> str:
     """§28 Q10: purpose-specific bests — no single composite ranking."""
-    ok4 = [r for r in tf4 if r.get("status") == "ok"]
     out = []
-    if ok4:
+    dss = sorted({r.get("dataset") for r in tf4 if r.get("status") == "ok"})
+    for ds in dss:
+        ok4 = [
+            r
+            for r in tf4
+            if r.get("status") == "ok" and r.get("dataset") == ds
+        ]
         b = max(ok4, key=lambda r: _f(r.get("top1_exp")))
         out.append(
             (
-                "strongest 1-byte predictor",
+                f"strongest 1-byte predictor ({ds})",
                 b["backend"],
                 f"top1_exp={fmt(_f(b.get('top1_exp')))}",
             )
@@ -414,37 +439,42 @@ def _purpose_table(tf4: list[dict], disc: list[dict], gen: list[dict], eetime: l
         )
         out.append(
             (
-                "best prediction per CPU second",
+                f"best prediction per CPU second ({ds})",
                 b["backend"],
                 f"top1_exp={fmt(_f(b.get('top1_exp')))}, "
                 f"evals/s={fmt(_f(b.get('evals_per_sec')), '.0f')}",
             )
         )
-    dr32 = [
-        r
-        for r in disc
-        if r.get("status") == "ok"
-        and str(r.get("continuation_bytes")) == "32"
-        and r.get("negative_type") == "random"
-    ]
-    if dr32:
-        b = max(dr32, key=lambda r: _f(r.get("top1")))
-        out.append(
-            ("strongest multi-byte predictor @32B", b["backend"], f"top1={fmt(_f(b.get('top1')))}")
-        )
-        b = max(
-            dr32,
-            key=lambda r: _f(r.get("top1"))
-            / max(1.0, 5.0 / _f(r.get("evals_per_sec"))),
-        )
-        out.append(
-            (
-                "best sequence-search backend @32B",
-                b["backend"],
-                f"top1={fmt(_f(b.get('top1')))}, "
-                f"evals/s={fmt(_f(b.get('evals_per_sec')), '.0f')}",
+        dr32 = [
+            r
+            for r in disc
+            if r.get("status") == "ok"
+            and r.get("dataset") == ds
+            and str(r.get("continuation_bytes")) == "32"
+            and r.get("negative_type") == "random"
+        ]
+        if dr32:
+            b = max(dr32, key=lambda r: _f(r.get("top1")))
+            out.append(
+                (
+                    f"strongest multi-byte predictor @32B ({ds})",
+                    b["backend"],
+                    f"top1={fmt(_f(b.get('top1')))}",
+                )
             )
-        )
+            b = max(
+                dr32,
+                key=lambda r: _f(r.get("top1"))
+                / max(1.0, 5.0 / _f(r.get("evals_per_sec"))),
+            )
+            out.append(
+                (
+                    f"best sequence-search backend @32B ({ds})",
+                    b["backend"],
+                    f"top1={fmt(_f(b.get('top1')))}, "
+                    f"evals/s={fmt(_f(b.get('evals_per_sec')), '.0f')}",
+                )
+            )
     g = [r for r in gen if r.get("status") == "ok" and r.get("prompt") != "__mean__"]
     if g:
         by = {}
@@ -537,6 +567,8 @@ def _runs_section(cfg: dict) -> str:
         "n_prompts",
         "gen_length",
         "workers",
+        "phases",
+        "backend_names",
     )
     for ds, meta in sorted(runs.items()):
         cmd = meta.get("command") or "(not recorded — run predates command logging)"
@@ -671,7 +703,13 @@ def build_report(results_dir: Path) -> Path:
         "after a flushed context block; zstandard cannot clone live stream "
         "state, so per-candidate cost stays O(context).\n"
         "- Equal-time outputs may be shorter than the 256-byte target — "
-        "that difference IS the measurement.\n",
+        "that difference IS the measurement.\n"
+        "- `generated_compression_bpb` is the summed per-step delta "
+        "`C(context+span)-C(context)`; it can go negative (bzip2) when "
+        "block reframing shrinks the container — a scorer trace, not a "
+        "likelihood.\n"
+        "- Generation phases (equal-eval, equal-time, snappy sweep) ran on "
+        "tiny_shakespeare only; wikitext2 covers scoring-side phases.\n",
     ]
     out = results_dir / "report.md"
     out.write_text("\n".join(parts), encoding="utf-8")
@@ -756,24 +794,30 @@ def _energy_note(disc: list[dict]) -> str:
 
 
 def _container_note(rows: list[dict]) -> str:
-    rows = [r for r in rows if r.get("status") == "ok"]
-    for r in rows:
+    notes = []
+    seen = set()
+    for r in [r for r in rows if r.get("status") == "ok"]:
         if r["backend_a"].startswith("lzma") and r["backend_b"] == "xz":
-            same = abs(_f(r.get("top1_exp_a")) - _f(r.get("top1_exp_b"))) < 0.02
+            ds = r.get("dataset", "?")
+            if ds in seen:
+                continue
+            seen.add(ds)
             rho = _f(r.get("spearman_mean"))
+            same = abs(_f(r.get("top1_exp_a")) - _f(r.get("top1_exp_b"))) < 0.02
             if same and rho > 0.9:
-                return (
-                    f"lzma/xz correlate strongly (spearman={fmt(rho)}) and "
-                    "predict equally — the xz gap in v2 was framing overhead, "
-                    "not algorithm quality.\n"
+                notes.append(
+                    f"{ds}: lzma/xz correlate strongly (spearman={fmt(rho)}) "
+                    "and predict equally — the xz gap in v2 was framing "
+                    "overhead, not algorithm quality."
                 )
-            return (
-                f"lzma vs xz diverge (spearman={fmt(rho)}, top1 "
-                f"{fmt(_f(r.get('top1_exp_a')))} vs {fmt(_f(r.get('top1_exp_b')))}) "
-                "— framing materially changes the scores; the xz gap is a "
-                "container artifact.\n"
-            )
-    return ""
+            else:
+                notes.append(
+                    f"{ds}: lzma vs xz diverge (spearman={fmt(rho)}, top1 "
+                    f"{fmt(_f(r.get('top1_exp_a')))} vs "
+                    f"{fmt(_f(r.get('top1_exp_b')))}) — framing materially "
+                    "changes the scores; the xz gap is a container artifact."
+                )
+    return "\n".join(notes) + ("\n" if notes else "")
 
 
 def _evalgen_table(rows: list[dict]) -> str:

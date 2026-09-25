@@ -1005,6 +1005,8 @@ def _cfg_meta(cfg: Bench3Config, dataset: str) -> dict:
         "n_prompts": cfg.n_prompts,
         "gen_length": cfg.gen_length,
         "workers": cfg.workers,
+        "phases": sorted(cfg.phases),
+        "backend_names": list(cfg.backend_names) or "all",
         "snappy_sweep_budgets": list(SNAPPY_SWEEP_BUDGETS),
         "wikitext2_source": wikitext.URL,
         "package_versions": instrument.package_versions(),
