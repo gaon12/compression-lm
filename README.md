@@ -148,6 +148,25 @@ compressible a model's *own* output is — a backend that copies the corpus
 verbatim scores a *lower* gen-BPB. They are never interchangeable; see
 `copy_metrics.csv` for the retrieval/copy analysis.
 
+## Third-phase benchmark
+
+`benchmark_v3.py` checks the second-phase findings with identical effective
+contexts, multiple zstd scoring modes, multi-byte discrimination, equal-time
+generation, and a second dataset (WikiText-2). Its detailed output is
+`results_v3/report.md`; `results_v3/summary.csv` pairs 4 KiB teacher-forced
+scores with generation statistics from the highest equal-evaluation budget.
+
+```bash
+python benchmark_v3.py --dataset tiny_shakespeare --out results_v3
+python benchmark_v3.py --dataset wikitext2 --out results_v3 --resume
+python benchmark_v3.py --assemble-only --out results_v3
+```
+
+Resume accepts additional phases or backends for the same dataset and run
+settings. It rejects changed data or settings in an existing output directory;
+use a new `--out` path for a different experiment. Failed tasks are retried.
+The benchmark report's pseudo-BPB is not a calibrated language-model metric.
+
 ## Development
 
 ```bash

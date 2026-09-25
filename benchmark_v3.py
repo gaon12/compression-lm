@@ -2,12 +2,13 @@
 """Third benchmark entry point — v3 verification experiment.
 
 Usage:
-    python benchmark_v3.py --dataset tiny_shakespeare --resume
+    python benchmark_v3.py --dataset tiny_shakespeare
     python benchmark_v3.py --dataset wikitext2 --resume
     python benchmark_v3.py --dataset tiny_shakespeare --phases scoreval,teacher
     python benchmark_v3.py --assemble-only --out results_v3
 
-Everything lands in results_v3/ (or --out); v2 outputs are untouched.
+Everything lands in results_v3/ (or --out); use --resume for existing checkpoints.
+Changed data or settings require a fresh output directory. v2 outputs are untouched.
 """
 
 from __future__ import annotations
