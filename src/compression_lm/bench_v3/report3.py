@@ -680,7 +680,7 @@ def build_report(results_dir: Path) -> Path:
         "\n## Repetition-collapse metrics\n",
         _rep_table(rep),
         "\n## Q4 - Tiny Shakespeare vs WikiText-2\n",
-        _dataset_compare(tf),
+        _dataset_compare(tf_main),
         "\n## Correlations (association only, never causal)\n",
         _correlations(tf4, gen_all, disc),
         "\n## Q7 / retrieval analysis\n",
