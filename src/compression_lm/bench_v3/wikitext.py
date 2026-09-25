@@ -14,13 +14,26 @@ aborting the benchmark.
 
 from __future__ import annotations
 
+import hashlib
 import urllib.request
 import zipfile
 from pathlib import Path
 
 from ..bench.datasets import DEFAULT_SEED, Dataset
 
+
+def _md5(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
 URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-v1.zip"
+# canonical torchtext MD5 — verified after download
+MD5 = "542ccefacc6c27f945fb54453812b3cd"
+# the metamind S3 bucket now returns a bare 301 (path-style deprecation);
+# the Wayback Machine holds the identical bytes.
+MIRRORS = (
+    URL,
+    "https://web.archive.org/web/20230301182406id_/" + URL,
+)
 FILES = ("wiki.train.tokens", "wiki.valid.tokens", "wiki.test.tokens")
 
 
@@ -32,9 +45,20 @@ def fetch_wikitext2(dest_dir: Path) -> dict[str, Path]:
     if all(p.exists() for p in paths.values()):
         return paths
     zpath = dest_dir / "wikitext-2-v1.zip"
-    if not zpath.exists():
-        print(f"downloading {URL}")
-        urllib.request.urlretrieve(URL, zpath)
+    if not zpath.exists() or _md5(zpath) != MD5:
+        last: Exception | None = None
+        for url in MIRRORS:
+            try:
+                print(f"downloading {url}")
+                urllib.request.urlretrieve(url, zpath)
+                if _md5(zpath) == MD5:
+                    break
+            except Exception as exc:
+                last = exc
+        else:
+            raise RuntimeError(f"wikitext-2 download failed from all mirrors: {last}")
+        if _md5(zpath) != MD5:
+            raise RuntimeError("wikitext-2 zip md5 mismatch")
     with zipfile.ZipFile(zpath) as z:
         for f in FILES:
             with z.open(f"wikitext-2/{f}") as src, paths[f].open("wb") as dst:
