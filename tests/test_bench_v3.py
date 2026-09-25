@@ -6,6 +6,7 @@ Optional-dependency tests are skipped (not failed) when a package is absent.
 
 from __future__ import annotations
 
+import csv
 import importlib.util
 import zlib
 
@@ -13,7 +14,7 @@ import pytest
 
 from compression_lm.backends.base import Backend, OneShotScorer
 from compression_lm.backends.zlib_backend import ZlibBackend
-from compression_lm.bench import reporting
+from compression_lm.bench import datasets, reporting
 from compression_lm.bench_v3 import (
     backends_v3,
     discriminate,
@@ -86,9 +87,7 @@ def test_zstd_modes_are_distinct_backends():
     ctx = b"the quick brown fox jumps over the lazy dog. " * 8
     for name, be in modes.items():
         sc = be.prepare(ctx)
-        assert all(
-            isinstance(sc.measure(c), int) for c in (b"a", b" ", b"the")
-        ), name
+        assert all(isinstance(sc.measure(c), int) for c in (b"a", b" ", b"the")), name
 
 
 @pytest.mark.skipif(not _have("zstandard"), reason="zstandard not installed")
@@ -167,9 +166,7 @@ def test_negative_candidates_exclude_true_start():
 def test_evaluate_discrimination_ranks_true_continuation():
     source = b"abcdefgh" * 64
     be = _ToyBackend()
-    recs = discriminate.evaluate_discrimination(
-        be, source, [10, 20, 30], 16, 4, seed=42
-    )
+    recs = discriminate.evaluate_discrimination(be, source, [10, 20, 30], 16, 4, seed=42)
     assert len(recs) == 3
     for r in recs:
         assert r.n_candidates == 32
@@ -247,9 +244,7 @@ def test_engine_time_budget_stops_early():
         _ToyBackend(),
         b"abcdef " * 400,
         b"abc",
-        GenerationConfig(
-            length=256, beam_width=2, lookahead=8, time_budget_sec=0.001, workers=1
-        ),
+        GenerationConfig(length=256, beam_width=2, lookahead=8, time_budget_sec=0.001, workers=1),
     )
     assert 0 < len(res.text) < 256  # partial output kept, not discarded
 
@@ -298,6 +293,25 @@ def test_manifest_persists_done_keys(tmp_path):
     runner3._Manifest(path).mark("teacher:t:zlib:4096:10")
     m2 = runner3._Manifest(path)
     assert "teacher:t:zlib:4096:10" in m2.done
+
+
+def test_manifest_retries_error_rows(tmp_path):
+    path = tmp_path / "manifest.json"
+    key = "speed:t:zlib"
+    reporting.write_json(tmp_path / "rows" / "speed__t__zlib.json", [{"status": "error"}])
+    runner3._Manifest(path).mark(key)
+    assert key not in runner3._Manifest(path).done
+
+
+def test_resume_rejects_changed_data_or_settings(tmp_path):
+    cfg = runner3.Bench3Config(out_dir=tmp_path / "res")
+    manifest = runner3._Manifest(cfg.raw_dir / "manifest.json")
+    ds = datasets.split_contiguous(b"abcdef" * 30, name="toy", gap=1)
+    runner3._check_run_config(cfg, ds, manifest)
+    runner3._check_run_config(cfg, ds, manifest)
+    cfg.seed += 1
+    with pytest.raises(ValueError, match="different data or settings"):
+        runner3._check_run_config(cfg, ds, manifest)
 
 
 def test_assemble_smoke_writes_every_csv(tmp_path):
@@ -365,6 +379,36 @@ def test_assemble_smoke_writes_every_csv(tmp_path):
         "note": "",
     }
     reporting.write_json(rows_dir / "teacher__t__zlib__4096__3.json", [tf_row])
+    reporting.write_json(
+        rows_dir / "evalgen__t__zlib__2000.json",
+        [
+            {
+                "task": "evalgen",
+                "status": "ok",
+                "dataset": "t",
+                "backend": "zlib",
+                "prompt": "__mean__",
+                "budget_per_byte": 2000,
+                "generated_compression_bpb": 2.0,
+            }
+        ],
+    )
+    reporting.write_json(
+        rows_dir / "evalgen__t__zlib__10000.json",
+        [
+            {
+                "task": "evalgen",
+                "status": "ok",
+                "dataset": "t",
+                "backend": "zlib",
+                "prompt": "__mean__",
+                "budget_per_byte": 10000,
+                "generated_compression_bpb": 1.0,
+                "copy_run": 12,
+                "overlap_32gram": 0.5,
+            }
+        ],
+    )
     reporting.write_json(rows_dir / "disc__t__zlib__4096__4__random__2.json", [disc_row])
     reporting.write_json(
         cfg.raw_dir / "posrec" / "t__zlib__4096__3.json",
@@ -433,5 +477,9 @@ def test_assemble_smoke_writes_every_csv(tmp_path):
     assert "[0." in tf_csv  # CI brackets populated from posrec
     disc_csv = (cfg.out_dir / "continuation_discrimination.csv").read_text()
     assert "top1_ci" in disc_csv
+    with (cfg.out_dir / "summary.csv").open(newline="", encoding="utf-8") as f:
+        summary = list(csv.DictReader(f))
+    assert summary[0]["gen_bpb"] == "1.0"
+    assert summary[0]["gen_copy_run"] == "12"
     rep = (cfg.out_dir / "report.md").read_text(encoding="utf-8")
     assert "zstd" in rep and "4 KiB" in rep

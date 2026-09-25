@@ -1,10 +1,8 @@
 """v3 benchmark orchestrator — checkpointed, resumable, dataset-aware.
 
 Every task writes its rows to ``results_v3/raw/rows/{key}.json`` and marks
-``raw/manifest.json``; a re-run skips finished keys (``--resume`` is the
-default behavior, kept explicit on the CLI). Task keys carry the dataset,
-backend, workload size, and experiment parameters so quick/debug runs can
-never be mistaken for full ones.
+``raw/manifest.json``. Resuming requires ``--resume`` and matching per-dataset
+provenance, including a source hash and experiment settings.
 
 Task inventory (spec §32 phases):
 
@@ -81,7 +79,7 @@ class Bench3Config:
     teacher_ctxs: tuple[int, ...] = TEACHER_CTXS
     backend_names: tuple[str, ...] = ()
     phases: frozenset[str] | tuple[str, ...] = ALL_PHASES
-    resume: bool = True  # manifest always resumes; flag documents intent
+    resume: bool = False
     skip: frozenset[str] = frozenset()
     assemble_only: bool = False
     zip_after: bool = False
@@ -101,8 +99,26 @@ class _Manifest:
                 self.done = set(json.loads(path.read_text(encoding="utf-8")))
             except json.JSONDecodeError:
                 self.done = set()
+        for key in tuple(self.done):
+            row_path = self._row_path(key)
+            if row_path.exists():
+                try:
+                    rows = json.loads(row_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    self.done.discard(key)
+                    continue
+                if any(row.get("status") == "error" for row in rows):
+                    self.done.discard(key)
+
+    def _row_path(self, key: str) -> Path:
+        return self.path.parent / "rows" / f"{key.replace(':', '__').replace('/', '_')}.json"
 
     def mark(self, key: str) -> None:
+        row_path = self._row_path(key)
+        if row_path.exists():
+            rows = json.loads(row_path.read_text(encoding="utf-8"))
+            if any(row.get("status") == "error" for row in rows):
+                return
         self.done.add(key)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(sorted(self.done), indent=1), encoding="utf-8")
@@ -115,6 +131,41 @@ def _row_path(cfg: Bench3Config, task_key: str) -> Path:
 
 def _save_rows(cfg: Bench3Config, task_key: str, rows: list[dict]) -> None:
     reporting.write_json(_row_path(cfg, task_key), rows)
+
+
+def _check_run_config(cfg: Bench3Config, ds: bench_ds.Dataset, manifest: _Manifest) -> None:
+    """Refuse to reuse rows produced from different data or settings."""
+    path = cfg.raw_dir / f"provenance_{ds.name}.json"
+    payload = {
+        "source_sha256": ds.sha256(),
+        "seed": cfg.seed,
+        "gap": cfg.gap,
+        "n_positions": cfg.n_positions,
+        "n_prompts": cfg.n_prompts,
+        "gen_length": cfg.gen_length,
+        "beam": cfg.beam,
+        "lookahead": cfg.lookahead,
+        "temperature": cfg.temperature,
+        "workers": cfg.workers,
+        "backend_options": v3opts.BACKEND_OPTIONS,
+    }
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid provenance file: {path}") from exc
+        if previous != payload:
+            raise ValueError(
+                f"Existing results for {ds.name} use different data or settings. "
+                "Choose a new --out directory."
+            )
+    elif any(f":{ds.name}:" in key for key in manifest.done):
+        raise ValueError(
+            f"Existing results for {ds.name} have no provenance record. "
+            "Choose a new --out directory."
+        )
+    else:
+        reporting.write_json(path, payload)
 
 
 def _n_positions(cfg: Bench3Config, backend: str) -> int:
@@ -761,9 +812,7 @@ def _load_dataset(cfg: Bench3Config, name: str) -> bench_ds.Dataset:
         return bench_ds.load_tiny_shakespeare(cfg.ts_path, gap=cfg.gap, seed=cfg.seed)
     # treat --dataset as a path to a raw text file
     p = Path(name)
-    return bench_ds.split_contiguous(
-        p.read_bytes(), name=p.stem, gap=cfg.gap, seed=cfg.seed
-    )
+    return bench_ds.split_contiguous(p.read_bytes(), name=p.stem, gap=cfg.gap, seed=cfg.seed)
 
 
 def _backend_map(cfg: Bench3Config, ds: bench_ds.Dataset) -> dict[str, Backend]:
@@ -833,9 +882,11 @@ def run(cfg: Bench3Config) -> Path:
         assemble(cfg)
         return cfg.out_dir
     manifest = _Manifest(cfg.raw_dir / "manifest.json")
-    ds_names = (
-        ["tiny_shakespeare", "wikitext2"] if cfg.dataset == "all" else [cfg.dataset]
-    )
+    if manifest.done and not cfg.resume:
+        raise ValueError(
+            "Output directory already has checkpoints; pass --resume or choose a new --out."
+        )
+    ds_names = ["tiny_shakespeare", "wikitext2"] if cfg.dataset == "all" else [cfg.dataset]
     for ds_name in ds_names:
         try:
             ds = _load_dataset(cfg, ds_name)
@@ -854,6 +905,7 @@ def run(cfg: Bench3Config) -> Path:
             )
             manifest.mark(f"dataset:{ds_name}")
             continue
+        _check_run_config(cfg, ds, manifest)
         reporting.write_json(cfg.raw_dir / f"dataset_{ds.name}.json", ds.split_meta())
         reporting.write_json(cfg.out_dir / f"config_{ds.name}.json", _cfg_meta(cfg, ds.name))
         # canonical shared position list (same seed -> same list as v2)
@@ -1032,8 +1084,7 @@ def assemble(cfg: Bench3Config) -> None:
             if r.get("mean_unique_scores"):
                 r.setdefault(
                     "avg_tie_group_size",
-                    r.get("evals", 0) / max(1, r.get("n_positions", 1))
-                    / r["mean_unique_scores"],
+                    r.get("evals", 0) / max(1, r.get("n_positions", 1)) / r["mean_unique_scores"],
                 )
             at = _discpos_all_tied(cfg, r)
             if at is not None:
@@ -1054,12 +1105,25 @@ def assemble(cfg: Bench3Config) -> None:
     reporting.write_csv(
         cfg.out_dir / "quantization.csv",
         [
-            {k: r.get(k) for k in (
-                "dataset", "backend", "scoring_mode", "context_provided",
-                "context_effective", "n_positions", "mean_unique_scores",
-                "mean_max_tie", "tie_candidate_frac", "pct_true_tied",
-                "pct_true_in_best_tie", "all_tied_fraction", "warning", "note",
-            )}
+            {
+                k: r.get(k)
+                for k in (
+                    "dataset",
+                    "backend",
+                    "scoring_mode",
+                    "context_provided",
+                    "context_effective",
+                    "n_positions",
+                    "mean_unique_scores",
+                    "mean_max_tie",
+                    "tie_candidate_frac",
+                    "pct_true_tied",
+                    "pct_true_in_best_tie",
+                    "all_tied_fraction",
+                    "warning",
+                    "note",
+                )
+            }
             for r in tf + zval
             if r.get("status") == "ok"
         ],
@@ -1102,14 +1166,32 @@ def assemble(cfg: Bench3Config) -> None:
     reporting.write_csv(
         cfg.out_dir / "copy_metrics.csv",
         [
-            {k: r.get(k) for k in (
-                "dataset", "backend", "task", "mode", "prompt", "prompt_id",
-                "generated_compression_bpb", "copy_span_max", "copy_span_mean",
-                "copy_span_median", "copy_run", "copy_run_ratio",
-                "overlap_4gram", "overlap_8gram", "overlap_16gram",
-                "overlap_32gram", "overlap_64gram", "novel_8gram",
-                "novel_16gram", "novel_32gram", "utf8_valid",
-            )}
+            {
+                k: r.get(k)
+                for k in (
+                    "dataset",
+                    "backend",
+                    "task",
+                    "mode",
+                    "prompt",
+                    "prompt_id",
+                    "generated_compression_bpb",
+                    "copy_span_max",
+                    "copy_span_mean",
+                    "copy_span_median",
+                    "copy_run",
+                    "copy_run_ratio",
+                    "overlap_4gram",
+                    "overlap_8gram",
+                    "overlap_16gram",
+                    "overlap_32gram",
+                    "overlap_64gram",
+                    "novel_8gram",
+                    "novel_16gram",
+                    "novel_32gram",
+                    "utf8_valid",
+                )
+            }
             for r in gen_rows
         ],
     )
@@ -1120,8 +1202,13 @@ def assemble(cfg: Bench3Config) -> None:
         rep = {
             k: r.get(k)
             for k in (
-                "rep_2gram", "rep_4gram", "rep_8gram", "unique_byte_ratio",
-                "longest_periodic_run", "periodic_run_period", "byte_entropy",
+                "rep_2gram",
+                "rep_4gram",
+                "rep_8gram",
+                "unique_byte_ratio",
+                "longest_periodic_run",
+                "periodic_run_period",
+                "byte_entropy",
             )
         }
         if rep.get("rep_4gram") is None and r.get("output_file"):
@@ -1139,17 +1226,11 @@ def assemble(cfg: Bench3Config) -> None:
         )
     reporting.write_csv(cfg.out_dir / "repetition_metrics.csv", rep_rows)
 
-    reporting.write_csv(
-        cfg.out_dir / "speed.csv", [r for r in rows if r.get("task") == "speed"]
-    )
+    reporting.write_csv(cfg.out_dir / "speed.csv", [r for r in rows if r.get("task") == "speed"])
     reporting.write_csv(cfg.out_dir / "backend_options.csv", v3opts.options_rows())
     reporting.write_csv(
         cfg.out_dir / "backend_status.csv",
-        [
-            r
-            for r in rows
-            if r.get("status") in ("skipped", "error")
-        ],
+        [r for r in rows if r.get("status") in ("skipped", "error")],
     )
 
     cfg_meta = _cfg_meta(cfg, cfg.dataset)
@@ -1177,15 +1258,20 @@ def assemble(cfg: Bench3Config) -> None:
     )
 
     # summary.csv: one headline row per backend (4KiB teacher + gen stats)
-    tf4 = [
+    tf4 = [r for r in tf if r.get("status") == "ok" and str(r.get("context_provided")) == "4096"]
+    gen_mean = [
         r
-        for r in tf
-        if r.get("status") == "ok" and str(r.get("context_provided")) == "4096"
+        for r in rows
+        if r.get("task") == "evalgen" and r.get("status") == "ok" and r.get("prompt") == "__mean__"
     ]
-    gen_mean = [r for r in gen_rows if r.get("prompt") == "__mean__"]
     summ = []
     for r in tf4:
-        g = next((x for x in gen_mean if x.get("backend") == r["backend"]), {})
+        matches = [
+            x
+            for x in gen_mean
+            if x.get("dataset") == r.get("dataset") and x.get("backend") == r["backend"]
+        ]
+        g = max(matches, key=lambda x: int(x.get("budget_per_byte") or 0), default={})
         summ.append(
             {
                 "dataset": r.get("dataset"),
