@@ -57,6 +57,14 @@ def test_generate_respects_length_and_alphabet():
     assert res.bits_per_byte >= 0
 
 
+def test_generate_does_not_charge_for_truncated_lookahead():
+    backend = backends.get("deflate")
+    cfg = GenerationConfig(length=3, lookahead=8, beam_width=4, memory=0, seed=0)
+    res = generate(backend, CORPUS, b"", cfg)
+    assert len(res.text) == 3
+    assert res.total_cost == backend.prepare(CORPUS).measure(res.text)
+
+
 def test_generate_reproduces_periodic_corpus():
     """On a periodic corpus, greedy decoding should track the period."""
     backend = backends.get("deflate")

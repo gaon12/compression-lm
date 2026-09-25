@@ -19,7 +19,7 @@ import random
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .backends.base import Backend, Scorer
 
@@ -217,7 +217,8 @@ def generate(
                 if cfg.repeat_penalty
                 else frozenset()
             )
-            beams, scores, ev = _beam_span(scorer, alphabet, cfg, pool, banned, rng)
+            span_cfg = replace(cfg, lookahead=min(cfg.lookahead, cfg.length - len(out)))
+            beams, scores, ev = _beam_span(scorer, alphabet, span_cfg, pool, banned, rng)
             evaluations += ev
             idx = _select(scores, cfg.temperature, rng)
             total_cost += scores[idx]
